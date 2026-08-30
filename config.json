@@ -1,0 +1,8 @@
+{
+  "disableOnUsbMouse": true,
+  "disableOnBluetoothMouse": true,
+  "disableOnOtherMouse": false,
+  "restoreOnDisconnect": true,
+  "notify": false,
+  "ignoreNamePatterns": []
+}

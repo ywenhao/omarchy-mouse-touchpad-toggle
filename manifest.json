@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "local.mouse-touchpad-toggle",
+  "name": "Mouse Touchpad Toggle",
+  "version": "1.0.0",
+  "author": "local",
+  "description": "Automatically disables the touchpad when a USB or Bluetooth mouse is connected, and restores it when all mice disconnect.",
+  "kinds": ["service"],
+  "entryPoints": {
+    "service": "Service.qml"
+  }
+}

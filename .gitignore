@@ -1,0 +1,5 @@
+.git/
+.cursor/
+*.swp
+*~
+.DS_Store
