@@ -16,7 +16,7 @@ if [[ $ACTION != on && $ACTION != off ]]; then
 fi
 
 NAME_FILE="$HOME/.local/state/omarchy/toggles/hypr/touchpad-disabled-name"
-MANAGED_FILE="$HOME/.local/state/omarchy/plugins/local.mouse-touchpad-toggle/managed"
+MANAGED_FILE="$HOME/.local/state/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle/managed"
 device=$(omarchy-hw-touchpad 2>/dev/null || true)
 
 if [[ -z $device ]]; then

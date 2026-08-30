@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-PLUGIN_ID="local.mouse-touchpad-toggle"
+PLUGIN_ID="dev.ywenhao.mouse-touchpad-toggle"
 SRC="$(cd "$(dirname "$0")" && pwd)"
 DEST="${HOME}/.config/omarchy/plugins/${PLUGIN_ID}"
 
@@ -18,10 +18,14 @@ chmod +x "$SRC"/bin/detect-mice "$SRC"/bin/apply-touchpad "$SRC"/install.sh "$SR
 # omarchy-shell by deleting QML that is still mounted).
 if command -v omarchy >/dev/null 2>&1; then
   omarchy plugin disable "$PLUGIN_ID" 2>/dev/null || true
+  # Pre-rename id from the first publish.
+  omarchy plugin disable local.mouse-touchpad-toggle 2>/dev/null || true
 fi
 if command -v omarchy-shell >/dev/null 2>&1; then
   omarchy-shell -q shell rescanPlugins || true
 fi
+
+rm -rf "${HOME}/.config/omarchy/plugins/local.mouse-touchpad-toggle"
 
 mkdir -p "$(dirname "$DEST")"
 rm -rf "$DEST"
@@ -46,7 +50,13 @@ omarchy plugin enable "$PLUGIN_ID"
 # (possibly by an older install of this plugin), claim ownership so unplug
 # still restores.
 NAME_FILE="${HOME}/.local/state/omarchy/toggles/hypr/touchpad-disabled-name"
-MANAGED_FILE="${HOME}/.local/state/omarchy/plugins/local.mouse-touchpad-toggle/managed"
+MANAGED_FILE="${HOME}/.local/state/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle/managed"
+OLD_MANAGED_FILE="${HOME}/.local/state/omarchy/plugins/local.mouse-touchpad-toggle/managed"
+if [[ -f $OLD_MANAGED_FILE && ! -f $MANAGED_FILE ]]; then
+  mkdir -p "$(dirname "$MANAGED_FILE")"
+  mv "$OLD_MANAGED_FILE" "$MANAGED_FILE"
+  rmdir "$(dirname "$OLD_MANAGED_FILE")" 2>/dev/null || true
+fi
 if [[ -f $NAME_FILE ]] && "$DEST/bin/detect-mice" | grep -q '"total":[1-9]'; then
   mkdir -p "$(dirname "$MANAGED_FILE")"
   printf '1\n' >"$MANAGED_FILE"

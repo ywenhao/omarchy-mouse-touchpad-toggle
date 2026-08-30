@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-PLUGIN_ID="local.mouse-touchpad-toggle"
+PLUGIN_ID="dev.ywenhao.mouse-touchpad-toggle"
 DEST="${HOME}/.config/omarchy/plugins/${PLUGIN_ID}"
 SRC="$(cd "$(dirname "$0")" && pwd)"
 
@@ -11,6 +11,7 @@ echo "Uninstalling ${PLUGIN_ID}"
 
 if command -v omarchy >/dev/null 2>&1; then
   omarchy plugin disable "$PLUGIN_ID" 2>/dev/null || true
+  omarchy plugin disable local.mouse-touchpad-toggle 2>/dev/null || true
 fi
 
 if [[ -e $DEST || -L $DEST ]]; then
@@ -19,6 +20,7 @@ if [[ -e $DEST || -L $DEST ]]; then
 else
   echo "No install found at ${DEST}"
 fi
+rm -rf "${HOME}/.config/omarchy/plugins/local.mouse-touchpad-toggle"
 
 if command -v omarchy-shell >/dev/null 2>&1; then
   omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
@@ -28,6 +30,9 @@ fi
 if [[ -x $SRC/bin/apply-touchpad ]]; then
   "$SRC/bin/apply-touchpad" on 2>/dev/null || true
 fi
+
+rm -f "${HOME}/.local/state/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle/managed"
+rmdir "${HOME}/.local/state/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle" 2>/dev/null || true
 rm -f "${HOME}/.local/state/omarchy/plugins/local.mouse-touchpad-toggle/managed"
 rmdir "${HOME}/.local/state/omarchy/plugins/local.mouse-touchpad-toggle" 2>/dev/null || true
 

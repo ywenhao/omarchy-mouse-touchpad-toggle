@@ -13,14 +13,14 @@ Item {
   readonly property string pluginDir: {
     if (manifest && manifest.__sourceDir)
       return String(manifest.__sourceDir).replace(/\/$/, "")
-    return Quickshell.env("HOME") + "/.config/omarchy/plugins/local.mouse-touchpad-toggle"
+    return Quickshell.env("HOME") + "/.config/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle"
   }
 
   readonly property string detectScript: pluginDir + "/bin/detect-mice"
   readonly property string applyScript: pluginDir + "/bin/apply-touchpad"
   readonly property string configPath: pluginDir + "/config.json"
   readonly property string managedFlagFile: Quickshell.env("HOME")
-    + "/.local/state/omarchy/plugins/local.mouse-touchpad-toggle/managed"
+    + "/.local/state/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle/managed"
 
   property bool disableOnUsbMouse: true
   property bool disableOnBluetoothMouse: true
@@ -135,7 +135,7 @@ Item {
         applyDesiredState()
       }
     } catch (e) {
-      console.warn("local.mouse-touchpad-toggle: failed to parse detect-mice output:", e)
+      console.warn("dev.ywenhao.mouse-touchpad-toggle: failed to parse detect-mice output:", e)
     }
   }
 
@@ -155,7 +155,7 @@ Item {
       if (Array.isArray(data.ignoreNamePatterns))
         ignoreNamePatterns = data.ignoreNamePatterns
     } catch (e) {
-      console.warn("local.mouse-touchpad-toggle: invalid config.json:", e)
+      console.warn("dev.ywenhao.mouse-touchpad-toggle: invalid config.json:", e)
     }
   }
 
@@ -175,8 +175,8 @@ Item {
     id: loadManagedProc
     command: [
       "bash", "-c",
-      "mkdir -p \"$HOME/.local/state/omarchy/plugins/local.mouse-touchpad-toggle\"; "
-        + "if [[ -f \"$HOME/.local/state/omarchy/plugins/local.mouse-touchpad-toggle/managed\" ]]; then echo 1; else echo 0; fi"
+      "mkdir -p \"$HOME/.local/state/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle\"; "
+        + "if [[ -f \"$HOME/.local/state/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle/managed\" ]]; then echo 1; else echo 0; fi"
     ]
     stdout: StdioCollector {
       waitForEnd: true
@@ -220,7 +220,7 @@ Item {
         root.touchpadDisabled = intendedDisable
         root.managedDisable = intendedDisable
       } else {
-        console.warn("local.mouse-touchpad-toggle: apply-touchpad exited with", exitCode)
+        console.warn("dev.ywenhao.mouse-touchpad-toggle: apply-touchpad exited with", exitCode)
       }
       if (root.pendingRecheck) {
         root.pendingRecheck = false
