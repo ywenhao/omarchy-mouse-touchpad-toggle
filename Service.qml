@@ -185,7 +185,10 @@ Item {
         root.managedDisable = on
         root.touchpadDisabled = on
         root.stateLoaded = true
-        root.scheduleRecheck(0)
+        if (root._initialized)
+          root.applyDesiredState()
+        else
+          root.scheduleRecheck(0)
       }
     }
     onExited: function(exitCode) {
