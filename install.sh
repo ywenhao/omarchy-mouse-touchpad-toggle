@@ -7,6 +7,7 @@ set -euo pipefail
 PLUGIN_ID="dev.ywenhao.mouse-touchpad-toggle"
 SRC="$(cd "$(dirname "$0")" && pwd)"
 DEST="${HOME}/.config/omarchy/plugins/${PLUGIN_ID}"
+OLD_DEST="${HOME}/.config/omarchy/plugins/local.mouse-touchpad-toggle"
 
 echo "Installing ${PLUGIN_ID}"
 echo "  from: ${SRC}"
@@ -25,10 +26,10 @@ if command -v omarchy-shell >/dev/null 2>&1; then
   omarchy-shell -q shell rescanPlugins || true
 fi
 
-rm -rf "${HOME}/.config/omarchy/plugins/local.mouse-touchpad-toggle"
-
 mkdir -p "$(dirname "$DEST")"
-rm -rf "$DEST"
+if [[ -L $DEST ]]; then
+  rm -f "$DEST"
+fi
 mkdir -p "$DEST"
 
 rsync -a \
@@ -37,7 +38,19 @@ rsync -a \
   --exclude '.cursor/' \
   --exclude '*.swp' \
   --exclude '.DS_Store' \
+  --exclude 'config.json' \
   "$SRC"/ "$DEST"/
+
+# Preserve user configuration on reinstalls and migrate it from the old plugin
+# id when present. Copy repository defaults only for a genuinely fresh install.
+if [[ ! -f $DEST/config.json ]]; then
+  if [[ -f $OLD_DEST/config.json ]]; then
+    cp "$OLD_DEST/config.json" "$DEST/config.json"
+  else
+    cp "$SRC/config.json" "$DEST/config.json"
+  fi
+fi
+rm -rf "$OLD_DEST"
 
 chmod +x "$DEST"/bin/detect-mice "$DEST"/bin/apply-touchpad "$DEST"/install.sh "$DEST"/uninstall.sh
 

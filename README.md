@@ -114,6 +114,8 @@ auto-disable, unloading restores the touchpad and clears its persisted state.
 omarchy plugin validate .
 ```
 
+Re-running `install.sh` preserves the installed `config.json`.
+
 ## License
 
 MIT
