@@ -43,13 +43,8 @@ chmod +x "$DEST"/bin/detect-mice "$DEST"/bin/apply-touchpad "$DEST"/install.sh "
 
 omarchy plugin validate "$DEST"
 
-omarchy-shell shell rescanPlugins >/dev/null
-omarchy plugin enable "$PLUGIN_ID"
-
-# Migrate: if a mouse is already connected and the touchpad was disabled
-# (possibly by an older install of this plugin), claim ownership so unplug
-# still restores.
-NAME_FILE="${HOME}/.local/state/omarchy/toggles/hypr/touchpad-disabled-name"
+# Migrate only ownership recorded by the pre-rename plugin. A generic existing
+# touchpad disable may belong to the user and must not be claimed.
 MANAGED_FILE="${HOME}/.local/state/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle/managed"
 OLD_MANAGED_FILE="${HOME}/.local/state/omarchy/plugins/local.mouse-touchpad-toggle/managed"
 if [[ -f $OLD_MANAGED_FILE && ! -f $MANAGED_FILE ]]; then
@@ -57,10 +52,9 @@ if [[ -f $OLD_MANAGED_FILE && ! -f $MANAGED_FILE ]]; then
   mv "$OLD_MANAGED_FILE" "$MANAGED_FILE"
   rmdir "$(dirname "$OLD_MANAGED_FILE")" 2>/dev/null || true
 fi
-if [[ -f $NAME_FILE ]] && "$DEST/bin/detect-mice" | grep -q '"total":[1-9]'; then
-  mkdir -p "$(dirname "$MANAGED_FILE")"
-  printf '1\n' >"$MANAGED_FILE"
-fi
+
+omarchy-shell shell rescanPlugins >/dev/null
+omarchy plugin enable "$PLUGIN_ID"
 
 echo
 echo "Enabled ${PLUGIN_ID}."

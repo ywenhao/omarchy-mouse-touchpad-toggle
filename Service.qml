@@ -94,7 +94,9 @@ Item {
     var wantDisabled = mouseConnected
 
     if (wantDisabled) {
-      if (touchpadDisabled && managedDisable)
+      // Preserve a touchpad that was already disabled by the user. Ownership
+      // is claimed only when this plugin actually changes the state.
+      if (touchpadDisabled)
         return
 
       applying = true
@@ -107,8 +109,8 @@ Item {
     }
 
     if (!restoreOnDisconnect) {
-      // Keep whatever state we last applied; just drop ownership tracking.
-      managedDisable = false
+      // Keep the disabled state and ownership so disabling or removing the
+      // plugin can still restore what it changed.
       return
     }
 
@@ -176,14 +178,17 @@ Item {
     command: [
       "bash", "-c",
       "mkdir -p \"$HOME/.local/state/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle\"; "
-        + "if [[ -f \"$HOME/.local/state/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle/managed\" ]]; then echo 1; else echo 0; fi"
+        + "managed=0; disabled=0; "
+        + "[[ -f \"$HOME/.local/state/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle/managed\" ]] && managed=1; "
+        + "[[ -f \"$HOME/.local/state/omarchy/toggles/hypr/touchpad-disabled-name\" ]] && disabled=1; "
+        + "printf '%s %s\\n' \"$managed\" \"$disabled\""
     ]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        var on = String(text || "").trim() === "1"
-        root.managedDisable = on
-        root.touchpadDisabled = on
+        var state = String(text || "").trim().split(/\s+/)
+        root.managedDisable = state[0] === "1"
+        root.touchpadDisabled = state[1] === "1"
         root.stateLoaded = true
         if (root._initialized)
           root.applyDesiredState()
@@ -282,6 +287,19 @@ Item {
 
   Component.onCompleted: {
     loadManagedProc.running = true
+  }
+
+  // Omarchy unloads a plugin before deleting it and does not run uninstall.sh.
+  // Restore only when our ownership marker proves this plugin disabled the
+  // touchpad. The detached command is independent of files about to be removed.
+  Component.onDestruction: {
+    Quickshell.execDetached([
+      "bash", "-c",
+      "managed=\"$HOME/.local/state/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle/managed\"; "
+        + "[[ -f \"$managed\" ]] || exit 0; "
+        + "omarchy toggle touchpad on >/dev/null 2>&1 || true; "
+        + "rm -f \"$HOME/.local/state/omarchy/toggles/hypr/touchpad-disabled-name\" \"$managed\""
+    ])
   }
 
   IpcHandler {

@@ -70,15 +70,19 @@ Ownership of an auto-disable is tracked in:
 `~/.local/state/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle/managed`
 
 so a shell restart still knows whether this plugin should restore on unplug.
+If the touchpad was already disabled by the user, the plugin leaves it alone and
+does not claim ownership. Disabling or removing the plugin restores the touchpad
+only when this marker proves the plugin changed it.
 
 ## Dependencies and security
 
 The plugin runs unsandboxed with your user permissions, like every Omarchy shell
-plugin. It does not use `sudo`, install packages, start systemd services, or
-access the network.
+plugin. It requires no elevated privileges, package installation, system
+services, or network access.
 
 It uses commands included with a standard Omarchy installation: Bash, `udevadm`,
-`hyprctl`, `omarchy-hw-touchpad`, and optionally `omarchy-osd`.
+`setpriv` (util-linux), `hyprctl`, `omarchy-hw-touchpad`, and optionally
+`omarchy-osd`. The local-development `install.sh` also uses `rsync`.
 
 ## Status
 
@@ -98,6 +102,9 @@ omarchy plugin update dev.ywenhao.mouse-touchpad-toggle
 ```sh
 omarchy plugin remove dev.ywenhao.mouse-touchpad-toggle
 ```
+
+Omarchy unloads the service before deleting it. If the plugin owns the current
+auto-disable, unloading restores the touchpad and clears its persisted state.
 
 ## Local development
 
