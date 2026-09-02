@@ -3,6 +3,16 @@
 An Omarchy Quattro **service** plugin that disables the laptop touchpad while a
 mouse is connected, and restores it when every mouse is gone.
 
+## Why this plugin?
+
+Some older laptops have limited palm rejection. Accidental touchpad contact
+while typing can move the pointer, relocate the text cursor, change focus, and
+interrupt the typing flow.
+
+This plugin is for users who work with an external mouse: it automatically
+disables the touchpad while a USB or Bluetooth mouse is connected, then restores
+the touchpad after the last external mouse is disconnected.
+
 ## Features
 
 - USB and Bluetooth mice detected via udev (`ID_INPUT_MOUSE=1`)
