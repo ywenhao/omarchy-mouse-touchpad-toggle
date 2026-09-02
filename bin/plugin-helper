@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Bounded detector, config loader, and descriptor-safe state helper."""
 
+import errno
 import fcntl
 import json
 import os
@@ -34,6 +35,7 @@ UDEVADM_CALL_SECONDS = 0.35
 MAX_UDEV_OUTPUT_BYTES = 512 * 1024
 MAX_TOUCHPAD_STATE_BYTES = 1024
 MAX_STATE_WRITE_BYTES = 4096
+MAX_HYPR_DEVICES_BYTES = 256 * 1024
 
 O_DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -113,6 +115,7 @@ def lock_directory(dir_fd: int) -> int:
 
 def open_private_state_dir() -> int:
     parent_fd = open_verified_directory(STATE_PARENT, create=True)
+    state_fd: int | None = None
     try:
         try:
             os.mkdir(STATE_DIR_NAME, 0o700, dir_fd=parent_fd)
@@ -121,13 +124,27 @@ def open_private_state_dir() -> int:
         state_fd = os.open(STATE_DIR_NAME, O_DIRECTORY, dir_fd=parent_fd)
     finally:
         os.close(parent_fd)
-    info = os.fstat(state_fd)
-    if info.st_uid != UID:
+    try:
+        info = os.fstat(state_fd)
+        if info.st_uid != UID:
+            raise HelperError("plugin state directory is not owned by the current user")
+        if info.st_mode & 0o077:
+            os.fchmod(state_fd, 0o700)
+        return state_fd
+    except Exception:
+        if state_fd is not None:
+            os.close(state_fd)
+        raise
+
+
+def open_state_and_lock() -> tuple[int, int]:
+    state_fd = open_private_state_dir()
+    try:
+        lock_fd = lock_directory(state_fd)
+    except Exception:
         os.close(state_fd)
-        raise HelperError("plugin state directory is not owned by the current user")
-    if info.st_mode & 0o077:
-        os.fchmod(state_fd, 0o700)
-    return state_fd
+        raise
+    return state_fd, lock_fd
 
 
 def open_regular_at(dir_fd: int, name: str, max_bytes: int) -> int | None:
@@ -140,16 +157,20 @@ def open_regular_at(dir_fd: int, name: str, max_bytes: int) -> int | None:
         return None
     except OSError:
         return None
-    info = os.fstat(fd)
-    if (
-        not stat.S_ISREG(info.st_mode)
-        or info.st_uid != UID
-        or info.st_mode & 0o022
-        or info.st_size > max_bytes
-    ):
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != UID
+            or info.st_mode & 0o022
+            or info.st_size > max_bytes
+        ):
+            os.close(fd)
+            return None
+        return fd
+    except Exception:
         os.close(fd)
-        return None
-    return fd
+        raise
 
 
 def read_bounded(fd: int, max_bytes: int) -> bytes:
@@ -170,6 +191,20 @@ def atomic_write_at(dir_fd: int, name: str, payload: bytes) -> None:
         raise HelperError("unsafe state filename")
     if len(payload) > MAX_STATE_WRITE_BYTES:
         raise HelperError("state payload exceeds byte limit")
+    existing_fd = open_regular_at(dir_fd, name, MAX_STATE_WRITE_BYTES)
+    if existing_fd is not None:
+        os.close(existing_fd)
+    else:
+        try:
+            os.lstat(name, dir_fd=dir_fd)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                raise HelperError("state target is a symlink") from error
+            raise HelperError("state target is not a safe regular file") from error
+        else:
+            raise HelperError("state target is not a safe regular file")
     temp_name = f".{name}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
     temp_fd: int | None = None
     try:
@@ -195,6 +230,10 @@ def atomic_write_at(dir_fd: int, name: str, payload: bytes) -> None:
         # directory for the complete replacement transaction.
         os.replace(temp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
         temp_name = None
+        verify_fd = open_regular_at(dir_fd, name, max(len(payload), 1))
+        if verify_fd is None:
+            raise HelperError("replacement did not produce a safe regular file")
+        os.close(verify_fd)
         os.fsync(dir_fd)
     finally:
         if temp_fd is not None:
@@ -207,6 +246,22 @@ def atomic_write_at(dir_fd: int, name: str, payload: bytes) -> None:
 
 
 def unlink_at(dir_fd: int, name: str) -> None:
+    if not SAFE_NAME.fullmatch(name):
+        raise HelperError("unsafe state filename")
+    try:
+        link_info = os.lstat(name, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(link_info.st_mode):
+        # Removing the link itself cannot follow it, and prevents a stale
+        # hostile entry from being reused on the next state transition.
+        os.unlink(name, dir_fd=dir_fd)
+        os.fsync(dir_fd)
+        return
+    fd = open_regular_at(dir_fd, name, MAX_STATE_WRITE_BYTES)
+    if fd is None:
+        raise HelperError("state entry is not a safe regular file")
+    os.close(fd)
     try:
         os.unlink(name, dir_fd=dir_fd)
         os.fsync(dir_fd)
@@ -226,11 +281,13 @@ def marker_exists_at(state_fd: int) -> bool:
 
 def marker_exists() -> bool:
     state_fd = open_private_state_dir()
-    lock_fd = lock_directory(state_fd)
+    lock_fd: int | None = None
     try:
+        lock_fd = lock_directory(state_fd)
         return marker_exists_at(state_fd)
     finally:
-        os.close(lock_fd)
+        if lock_fd is not None:
+            os.close(lock_fd)
         os.close(state_fd)
 
 
@@ -254,13 +311,17 @@ def toggle_state_exists() -> bool:
 
 
 def state_snapshot() -> dict[str, bool]:
-    state_fd = open_private_state_dir()
-    state_lock_fd = lock_directory(state_fd)
+    state_fd, state_lock_fd = open_state_and_lock()
     try:
-        return {
-            "managed": marker_exists_at(state_fd),
-            "disabled": toggle_state_exists(),
-        }
+        managed = marker_exists_at(state_fd)
+        disabled = toggle_state_exists()
+        if managed and not disabled:
+            # A user may have enabled the device manually, or a prior
+            # transition may have been interrupted. Do not retain a claim that
+            # could later restore a state we no longer own.
+            unlink_at(state_fd, MANAGED_NAME)
+            managed = False
+        return {"managed": managed, "disabled": disabled}
     finally:
         os.close(state_lock_fd)
         os.close(state_fd)
@@ -268,11 +329,14 @@ def state_snapshot() -> dict[str, bool]:
 
 def set_managed(value: bool, state_fd: int | None = None) -> None:
     owns_lock = state_fd is None
+    lock_fd: int | None = None
     if owns_lock:
         state_fd = open_private_state_dir()
-        lock_fd = lock_directory(state_fd)
-    else:
-        lock_fd = None
+        try:
+            lock_fd = lock_directory(state_fd)
+        except Exception:
+            os.close(state_fd)
+            raise
     try:
         if value:
             atomic_write_at(state_fd, MANAGED_NAME, b"1\n")
@@ -280,7 +344,8 @@ def set_managed(value: bool, state_fd: int | None = None) -> None:
             unlink_at(state_fd, MANAGED_NAME)
     finally:
         if owns_lock:
-            os.close(lock_fd)
+            if lock_fd is not None:
+                os.close(lock_fd)
             os.close(state_fd)
 
 
@@ -292,35 +357,47 @@ def write_touchpad_state(device: str, state_fd: int | None = None) -> None:
     ):
         raise HelperError("invalid touchpad device name")
     owns_state_lock = state_fd is None
+    state_lock_fd: int | None = None
     if owns_state_lock:
         state_fd = open_private_state_dir()
-        state_lock_fd = lock_directory(state_fd)
-    else:
-        state_lock_fd = None
-    toggle_fd = open_verified_directory(TOGGLE_PARENT, create=True)
+        try:
+            state_lock_fd = lock_directory(state_fd)
+        except Exception:
+            os.close(state_fd)
+            raise
+    toggle_fd: int | None = None
     try:
+        toggle_fd = open_verified_directory(TOGGLE_PARENT, create=True)
         atomic_write_at(toggle_fd, TOGGLE_NAME, device.encode("utf-8") + b"\n")
     finally:
-        os.close(toggle_fd)
+        if toggle_fd is not None:
+            os.close(toggle_fd)
         if owns_state_lock:
-            os.close(state_lock_fd)
+            if state_lock_fd is not None:
+                os.close(state_lock_fd)
             os.close(state_fd)
 
 
 def remove_touchpad_state(state_fd: int | None = None) -> None:
     owns_state_lock = state_fd is None
+    state_lock_fd: int | None = None
     if owns_state_lock:
         state_fd = open_private_state_dir()
-        state_lock_fd = lock_directory(state_fd)
-    else:
-        state_lock_fd = None
-    toggle_fd = open_verified_directory(TOGGLE_PARENT, create=True)
+        try:
+            state_lock_fd = lock_directory(state_fd)
+        except Exception:
+            os.close(state_fd)
+            raise
+    toggle_fd: int | None = None
     try:
+        toggle_fd = open_verified_directory(TOGGLE_PARENT, create=True)
         unlink_at(toggle_fd, TOGGLE_NAME)
     finally:
-        os.close(toggle_fd)
+        if toggle_fd is not None:
+            os.close(toggle_fd)
         if owns_state_lock:
-            os.close(state_lock_fd)
+            if state_lock_fd is not None:
+                os.close(state_lock_fd)
             os.close(state_fd)
 
 
@@ -539,6 +616,43 @@ def touchpad_device(deadline: float) -> str:
     return device
 
 
+def query_touchpad_enabled(device: str, deadline: float) -> bool:
+    """Read the live Hyprland pointer attachment state for one exact device."""
+    raw = read_process_output(
+        ["hyprctl", "devices", "-j"],
+        deadline,
+        call_seconds=1.0,
+        max_output_bytes=MAX_HYPR_DEVICES_BYTES,
+    )
+    try:
+        data = json.loads(raw.decode("utf-8", errors="strict"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise HelperError("hyprctl devices returned invalid JSON") from error
+    mice = data.get("mice") if isinstance(data, dict) else None
+    if not isinstance(mice, list) or len(mice) > MAX_DEVICES:
+        raise HelperError("hyprctl mouse list is invalid or too large")
+    matches: list[dict] = []
+    for entry in mice:
+        if not isinstance(entry, dict):
+            raise HelperError("hyprctl mouse entry is invalid")
+        name = entry.get("name")
+        if not isinstance(name, str) or len(name) > MAX_DEVICE_NAME_CHARS:
+            raise HelperError("hyprctl mouse name is invalid")
+        if name == device:
+            matches.append(entry)
+    if len(matches) != 1:
+        raise HelperError("touchpad is missing or ambiguous in Hyprland state")
+    entry = matches[0]
+    if type(entry.get("enabled")) is bool:
+        return entry["enabled"]
+    # Current Quattro Hyprland omits `enabled`; a configured device remains in
+    # the list but is detached from the cursor when disabled. Treat an explicit
+    # `connected` field as authoritative when available, otherwise fail closed.
+    if type(entry.get("connected")) is bool:
+        return entry["connected"]
+    raise HelperError("Hyprland does not expose a live enabled state")
+
+
 def set_hyprland_touchpad(device: str, enabled: bool, deadline: float) -> None:
     escaped = device.replace("\\", "\\\\").replace('"', '\\"')
     expression = f'hl.device({{ name = "{escaped}", enabled = {str(enabled).lower()} }})'
@@ -565,14 +679,21 @@ def notify_touchpad(enabled: bool) -> None:
 def change_touchpad(action: str, notify: bool) -> None:
     deadline = time.monotonic() + 2.5
     device = touchpad_device(deadline)
-    state_fd = open_private_state_dir()
-    state_lock_fd = lock_directory(state_fd)
+    state_fd, state_lock_fd = open_state_and_lock()
     try:
         if action == "off":
+            if not query_touchpad_enabled(device, deadline):
+                return
             try:
-                set_hyprland_touchpad(device, False, deadline)
                 write_touchpad_state(device, state_fd)
                 set_managed(True, state_fd)
+                # Publish ownership before the live change. If the shell is
+                # unloaded in this small window, restore() sees the marker and
+                # safely enables the device; a failed live change rolls the
+                # marker back below.
+                set_hyprland_touchpad(device, False, deadline)
+                if query_touchpad_enabled(device, deadline):
+                    raise HelperError("touchpad did not transition to disabled")
             except Exception:
                 try:
                     remove_touchpad_state(state_fd)
@@ -604,10 +725,12 @@ def change_touchpad(action: str, notify: bool) -> None:
 
 
 def restore_if_managed() -> None:
-    state_fd = open_private_state_dir()
-    state_lock_fd = lock_directory(state_fd)
+    state_fd, state_lock_fd = open_state_and_lock()
     try:
-        if not marker_exists_at(state_fd):
+        if not marker_exists_at(state_fd) or not toggle_state_exists():
+            return
+        if not toggle_state_exists():
+            unlink_at(state_fd, MANAGED_NAME)
             return
         device = touchpad_device(time.monotonic() + 1.5)
         set_hyprland_touchpad(device, True, time.monotonic() + 1.0)

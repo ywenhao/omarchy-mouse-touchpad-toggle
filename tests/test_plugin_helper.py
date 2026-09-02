@@ -139,10 +139,13 @@ class PluginHelperTests(unittest.TestCase):
         target.write_text("do not modify", encoding="utf-8")
         marker.unlink()
         marker.symlink_to(target)
-        self.run_helper("managed")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_helper("managed")
         self.assertEqual(target.read_text(encoding="utf-8"), "do not modify")
-        self.assertTrue(stat.S_ISREG(marker.stat().st_mode))
+        self.assertTrue(marker.is_symlink())
 
+        marker.unlink()
+        self.run_helper("managed")
         lock = marker.parent / ".lock"
         lock.unlink()
         lock.symlink_to(target)
@@ -162,7 +165,7 @@ class PluginHelperTests(unittest.TestCase):
         self.assertFalse(state.exists())
         self.assertEqual(target.read_text(encoding="utf-8"), "keep")
 
-    def test_touchpad_state_write_replaces_a_symlink_not_its_target(self):
+    def test_touchpad_state_write_refuses_a_symlink_without_touching_target(self):
         helper = load_helper_module()
         helper.HOME = self.home
         helper.STATE_PARENT = self.home / ".local/state/omarchy/plugins"
@@ -173,12 +176,11 @@ class PluginHelperTests(unittest.TestCase):
         target.write_text("keep", encoding="utf-8")
         state = helper.TOGGLE_PARENT / helper.TOGGLE_NAME
         state.symlink_to(target)
-        helper.write_touchpad_state("test-touchpad")
+        with self.assertRaises(helper.HelperError):
+            helper.write_touchpad_state("test-touchpad")
 
         self.assertEqual(target.read_text(encoding="utf-8"), "keep")
-        self.assertTrue(stat.S_ISREG(state.stat().st_mode))
-        self.assertEqual(stat.S_IMODE(state.stat().st_mode), 0o600)
-        self.assertEqual(state.read_text(encoding="utf-8"), "test-touchpad\n")
+        self.assertTrue(state.is_symlink())
 
     def test_touchpad_off_on_and_restore_round_trip(self):
         self.write_fake_command("omarchy-hw-touchpad", "#!/bin/sh\nprintf 'Test Touchpad\\n'\n")
@@ -206,6 +208,19 @@ class PluginHelperTests(unittest.TestCase):
         self.assertFalse(state["managed"])
         self.assertFalse(state["disabled"])
         self.assertGreaterEqual(log.read_text(encoding="utf-8").count("enabled = true"), 2)
+
+    def test_restore_does_not_override_a_missing_owned_name(self):
+        self.write_fake_command("omarchy-hw-touchpad", "#!/bin/sh\nprintf 'Test Touchpad\\n'\n")
+        log = self.home / "hyprctl.log"
+        self.write_fake_command(
+            "hyprctl",
+            f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\n",
+        )
+        self.run_helper("managed")
+        self.run_helper("restore")
+        self.assertFalse(log.exists())
+        state = json.loads(self.run_helper("state").stdout)
+        self.assertFalse(state["managed"])
 
     def test_failed_live_disable_does_not_leave_owned_state(self):
         self.write_fake_command("omarchy-hw-touchpad", "#!/bin/sh\nprintf 'Test Touchpad\\n'\n")

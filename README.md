@@ -114,9 +114,11 @@ omarchy plugin update dev.ywenhao.mouse-touchpad-toggle
 omarchy plugin remove dev.ywenhao.mouse-touchpad-toggle
 ```
 
-Omarchy unloads the service before deleting it. If the plugin owns the current
-auto-disable, unloading invokes Omarchy's built-in touchpad restore command
-before the plugin directory is removed, so the touchpad is not left disabled.
+Omarchy unloads the service before deleting it. The service starts its
+descriptor-safe restore helper while the plugin is still present; on Linux the
+executing helper remains valid even when Omarchy then removes the directory.
+It restores the touchpad only when the plugin's ownership marker and saved name
+are both valid.
 
 ## Local development
 

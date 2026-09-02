@@ -80,7 +80,7 @@ Item {
   }
 
   function matchesAny(name, patterns) {
-    if (!patterns || !patterns.length)
+    if (!Array.isArray(patterns) || patterns.length > maxPatterns || !patterns.length)
       return false
     var lower = String(name || "").toLowerCase()
     for (var i = 0; i < patterns.length; i++) {
@@ -100,7 +100,9 @@ Item {
   }
 
   function relevantFromData(data) {
-    var devices = (data && data.devices) || []
+    var devices = data && Array.isArray(data.devices) ? data.devices : []
+    if (devices.length > maxDevices)
+      return { valid: false, connected: false, count: 0, devices: [] }
     var kept = []
     for (var i = 0; i < devices.length; i++) {
       var device = devices[i] || {}
@@ -110,9 +112,10 @@ Item {
         continue
       if (!busAllowed(bus))
         continue
-      kept.push(device)
+      if (kept.length < maxDevices)
+        kept.push(device)
     }
-    return { connected: kept.length > 0, count: kept.length, devices: kept }
+    return { valid: true, connected: kept.length > 0, count: kept.length, devices: kept }
   }
 
   function scheduleRecheck(delayMs) {
@@ -158,7 +161,7 @@ Item {
       return
     }
 
-    if (!managedDisable)
+    if (!managedDisable || !touchpadDisabled)
       return
 
     applying = true
@@ -195,6 +198,8 @@ Item {
           return false
       }
       var result = relevantFromData(data)
+      if (!result.valid)
+        return false
       var changed = result.connected !== mouseConnected || result.count !== mouseCount
       mouseConnected = result.connected
       mouseCount = result.count
@@ -204,7 +209,7 @@ Item {
       }
       return true
     } catch (e) {
-      console.warn("dev.ywenhao.mouse-touchpad-toggle: failed to parse detect-mice output:", e)
+      console.warn("dev.ywenhao.mouse-touchpad-toggle: failed to parse detector output:", e)
       return false
     }
   }
@@ -287,9 +292,8 @@ Item {
     id: loadManagedProc
     property bool accepted: false
     command: [root.helperScript, "state"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: loadManagedProc.accepted = root.loadState(text)
+    stdout: SplitParser {
+      onRead: function(line) { loadManagedProc.accepted = root.loadState(line) }
     }
     onExited: function(exitCode) {
       if (!accepted)
@@ -301,10 +305,9 @@ Item {
     id: configProc
     property bool accepted: false
     command: [root.helperScript, "config", root.pluginDir]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        configProc.accepted = root.loadConfig(text)
+    stdout: SplitParser {
+      onRead: function(line) {
+        configProc.accepted = root.loadConfig(line)
         if (configProc.accepted) {
           root.configLoaded = true
           root._initialized = false
@@ -329,9 +332,8 @@ Item {
     id: detectProc
     property bool accepted: false
     command: [root.helperScript, "detect"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: detectProc.accepted = root.onDetectResult(text)
+    stdout: SplitParser {
+      onRead: function(line) { detectProc.accepted = root.onDetectResult(line) }
     }
     onExited: {
       if (root.pendingRecheck) {
@@ -352,8 +354,13 @@ Item {
         root.touchpadDisabled = intendedDisable
         root.managedDisable = intendedDisable
       } else {
-        console.warn("dev.ywenhao.mouse-touchpad-toggle: apply-touchpad exited with", exitCode)
+        console.warn("dev.ywenhao.mouse-touchpad-toggle: touchpad helper exited with", exitCode)
         applyRetryTimer.restart()
+        if (root.pendingRecheck) {
+          root.pendingRecheck = false
+          root.scheduleRecheck(50)
+        }
+        return
       }
       root.applyDesiredState()
       if (root.pendingRecheck) {
@@ -443,14 +450,11 @@ Item {
   }
 
   // Omarchy unloads a plugin before deleting it and has no uninstall hook.
-  // Ask the helper to inspect the ownership marker, and also use the stable
-  // built-in command when QML has observed plugin ownership. The latter keeps
-  // the live restore working even if the plugin directory is deleted before
-  // the detached helper has exec'd.
+  // The detached process is spawned before Omarchy removes the plugin folder;
+  // once exec'd, Linux keeps the helper inode alive through directory removal.
+  // It validates ownership itself before changing the touchpad.
   Component.onDestruction: {
     Quickshell.execDetached([helperScript, "restore"])
-    if (managedDisable)
-      Quickshell.execDetached(["omarchy", "toggle", "touchpad", "on"])
   }
 
   IpcHandler {
