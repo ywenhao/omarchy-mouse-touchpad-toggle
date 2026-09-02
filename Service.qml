@@ -16,11 +16,13 @@ Item {
     return Quickshell.env("HOME") + "/.config/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle"
   }
 
-  readonly property string detectScript: pluginDir + "/bin/detect-mice"
-  readonly property string applyScript: pluginDir + "/bin/apply-touchpad"
+  readonly property string helperScript: pluginDir + "/bin/plugin-helper"
   readonly property string configPath: pluginDir + "/config.json"
-  readonly property string managedFlagFile: Quickshell.env("HOME")
-    + "/.local/state/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle/managed"
+  readonly property int maxHelperOutputChars: 65536
+  readonly property int maxDevices: 64
+  readonly property int maxPatterns: 32
+  readonly property int maxPatternChars: 128
+  readonly property int maxDeviceNameChars: 128
 
   property bool disableOnUsbMouse: true
   property bool disableOnBluetoothMouse: true
@@ -36,7 +38,46 @@ Item {
   property bool applying: false
   property bool pendingRecheck: false
   property bool stateLoaded: false
+  property bool configLoaded: false
+  property bool configReloadPending: false
   property bool _initialized: false
+
+  function parseHelperJson(text) {
+    var raw = String(text || "")
+    if (raw.length === 0 || raw.length > maxHelperOutputChars)
+      throw new Error("helper output size is invalid")
+    var data = JSON.parse(raw)
+    if (!data || typeof data !== "object" || Array.isArray(data))
+      throw new Error("helper output is not an object")
+    return data
+  }
+
+  function boundedString(value, maxLength) {
+    if (typeof value !== "string" || value.length > maxLength)
+      return false
+    for (var i = 0; i < value.length; i++) {
+      var code = value.charCodeAt(i)
+      if (code < 32 || (code >= 127 && code <= 159))
+        return false
+    }
+    return true
+  }
+
+  function boundedInteger(value, maximum) {
+    return typeof value === "number" && isFinite(value)
+      && Math.floor(value) === value && value >= 0 && value <= maximum
+  }
+
+  function hasOnlyKeys(value, keys) {
+    var allowed = ({})
+    for (var i = 0; i < keys.length; i++)
+      allowed[keys[i]] = true
+    for (var key in value) {
+      if (!allowed[key])
+        return false
+    }
+    return true
+  }
 
   function matchesAny(name, patterns) {
     if (!patterns || !patterns.length)
@@ -80,10 +121,13 @@ Item {
   }
 
   function recheck() {
+    if (!stateLoaded || !configLoaded)
+      return
     if (detectProc.running) {
       pendingRecheck = true
       return
     }
+    detectProc.accepted = false
     detectProc.running = true
   }
 
@@ -101,8 +145,8 @@ Item {
 
       applying = true
       applyProc.command = notify
-        ? [applyScript, "off", "--notify"]
-        : [applyScript, "off"]
+        ? [helperScript, "touchpad", "off", "--notify"]
+        : [helperScript, "touchpad", "off"]
       applyProc.intendedDisable = true
       applyProc.running = true
       return
@@ -119,15 +163,37 @@ Item {
 
     applying = true
     applyProc.command = notify
-      ? [applyScript, "on", "--notify"]
-      : [applyScript, "on"]
+      ? [helperScript, "touchpad", "on", "--notify"]
+      : [helperScript, "touchpad", "on"]
     applyProc.intendedDisable = false
     applyProc.running = true
   }
 
   function onDetectResult(text) {
     try {
-      var data = JSON.parse(String(text || "").trim() || "{}")
+      var data = parseHelperJson(text)
+      var detectionKeys = [
+        "schemaVersion", "type", "ok", "usb", "bluetooth",
+        "other", "total", "devices"
+      ]
+      if (data.schemaVersion !== 1 || data.type !== "detection"
+          || data.ok !== true || !hasOnlyKeys(data, detectionKeys)
+          || !boundedInteger(data.usb, maxDevices)
+          || !boundedInteger(data.bluetooth, maxDevices)
+          || !boundedInteger(data.other, maxDevices)
+          || !boundedInteger(data.total, maxDevices)
+          || !Array.isArray(data.devices) || data.devices.length > maxDevices
+          || data.total !== data.devices.length
+          || data.total !== data.usb + data.bluetooth + data.other)
+        return false
+      for (var i = 0; i < data.devices.length; i++) {
+        var device = data.devices[i]
+        if (!device || typeof device !== "object"
+            || !hasOnlyKeys(device, ["name", "bus"])
+            || !boundedString(device.name, maxDeviceNameChars)
+            || ["usb", "bluetooth", "other"].indexOf(device.bus) === -1)
+          return false
+      }
       var result = relevantFromData(data)
       var changed = result.connected !== mouseConnected || result.count !== mouseCount
       mouseConnected = result.connected
@@ -136,85 +202,143 @@ Item {
         _initialized = true
         applyDesiredState()
       }
+      return true
     } catch (e) {
       console.warn("dev.ywenhao.mouse-touchpad-toggle: failed to parse detect-mice output:", e)
+      return false
     }
   }
 
   function loadConfig(text) {
     try {
-      var data = JSON.parse(String(text || "").trim() || "{}")
-      if (typeof data.disableOnUsbMouse === "boolean")
-        disableOnUsbMouse = data.disableOnUsbMouse
-      if (typeof data.disableOnBluetoothMouse === "boolean")
-        disableOnBluetoothMouse = data.disableOnBluetoothMouse
-      if (typeof data.disableOnOtherMouse === "boolean")
-        disableOnOtherMouse = data.disableOnOtherMouse
-      if (typeof data.restoreOnDisconnect === "boolean")
-        restoreOnDisconnect = data.restoreOnDisconnect
-      if (typeof data.notify === "boolean")
-        notify = data.notify
-      if (Array.isArray(data.ignoreNamePatterns))
-        ignoreNamePatterns = data.ignoreNamePatterns
+      var data = parseHelperJson(text)
+      var booleanKeys = [
+        "disableOnUsbMouse", "disableOnBluetoothMouse",
+        "disableOnOtherMouse", "restoreOnDisconnect", "notify"
+      ]
+      var configKeys = ["schemaVersion", "type", "ignoreNamePatterns"].concat(booleanKeys)
+      if (data.schemaVersion !== 1 || data.type !== "config"
+          || !hasOnlyKeys(data, configKeys))
+        return false
+      for (var i = 0; i < booleanKeys.length; i++) {
+        if (typeof data[booleanKeys[i]] !== "boolean")
+          return false
+      }
+      if (!Array.isArray(data.ignoreNamePatterns)
+          || data.ignoreNamePatterns.length > maxPatterns)
+        return false
+      for (var j = 0; j < data.ignoreNamePatterns.length; j++) {
+        if (!boundedString(data.ignoreNamePatterns[j], maxPatternChars))
+          return false
+      }
+      disableOnUsbMouse = data.disableOnUsbMouse
+      disableOnBluetoothMouse = data.disableOnBluetoothMouse
+      disableOnOtherMouse = data.disableOnOtherMouse
+      restoreOnDisconnect = data.restoreOnDisconnect
+      notify = data.notify
+      ignoreNamePatterns = data.ignoreNamePatterns.slice(0)
+      return true
     } catch (e) {
       console.warn("dev.ywenhao.mouse-touchpad-toggle: invalid config.json:", e)
+      return false
+    }
+  }
+
+  function requestConfigReload() {
+    if (configProc.running) {
+      configReloadPending = true
+      return
+    }
+    configProc.accepted = false
+    configProc.running = true
+  }
+
+  function loadState(text) {
+    try {
+      var data = parseHelperJson(text)
+      if (data.schemaVersion !== 1 || data.type !== "state"
+          || !hasOnlyKeys(data, ["schemaVersion", "type", "managed", "disabled"])
+          || typeof data.managed !== "boolean" || typeof data.disabled !== "boolean")
+        return false
+      managedDisable = data.managed
+      touchpadDisabled = data.disabled
+      stateLoaded = true
+      if (_initialized)
+        applyDesiredState()
+      else if (configLoaded)
+        scheduleRecheck(0)
+      return true
+    } catch (e) {
+      console.warn("dev.ywenhao.mouse-touchpad-toggle: failed to load state:", e)
+      return false
     }
   }
 
   FileView {
     id: configFile
     path: root.configPath
+    preload: false
     watchChanges: true
     printErrors: false
-    onLoaded: {
-      root.loadConfig(text())
-      root.scheduleRecheck(0)
-    }
-    onFileChanged: reload()
+    onFileChanged: root.requestConfigReload()
   }
 
   Process {
     id: loadManagedProc
-    command: [
-      "bash", "-c",
-      "mkdir -p \"$HOME/.local/state/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle\"; "
-        + "managed=0; disabled=0; "
-        + "[[ -f \"$HOME/.local/state/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle/managed\" ]] && managed=1; "
-        + "[[ -f \"$HOME/.local/state/omarchy/toggles/hypr/touchpad-disabled-name\" ]] && disabled=1; "
-        + "printf '%s %s\\n' \"$managed\" \"$disabled\""
-    ]
+    property bool accepted: false
+    command: [root.helperScript, "state"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: loadManagedProc.accepted = root.loadState(text)
+    }
+    onExited: function(exitCode) {
+      if (!accepted)
+        stateRetryTimer.restart()
+    }
+  }
+
+  Process {
+    id: configProc
+    property bool accepted: false
+    command: [root.helperScript, "config", root.pluginDir]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        var state = String(text || "").trim().split(/\s+/)
-        root.managedDisable = state[0] === "1"
-        root.touchpadDisabled = state[1] === "1"
-        root.stateLoaded = true
-        if (root._initialized)
-          root.applyDesiredState()
-        else
-          root.scheduleRecheck(0)
+        configProc.accepted = root.loadConfig(text)
+        if (configProc.accepted) {
+          root.configLoaded = true
+          root._initialized = false
+          if (root.stateLoaded)
+            root.scheduleRecheck(0)
+        }
       }
     }
     onExited: function(exitCode) {
-      if (!root.stateLoaded) {
-        root.stateLoaded = true
-        root.scheduleRecheck(0)
+      if (root.configReloadPending) {
+        root.configReloadPending = false
+        configRetryTimer.interval = 50
+        configRetryTimer.restart()
+      } else if (!accepted) {
+        configRetryTimer.interval = 1000
+        configRetryTimer.restart()
       }
     }
   }
 
   Process {
     id: detectProc
-    command: [root.detectScript]
+    property bool accepted: false
+    command: [root.helperScript, "detect"]
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onDetectResult(text)
+      onStreamFinished: detectProc.accepted = root.onDetectResult(text)
     }
     onExited: {
       if (root.pendingRecheck) {
         root.pendingRecheck = false
         root.scheduleRecheck(50)
+      } else if (!accepted) {
+        root.scheduleRecheck(1000)
       }
     }
   }
@@ -229,7 +353,9 @@ Item {
         root.managedDisable = intendedDisable
       } else {
         console.warn("dev.ywenhao.mouse-touchpad-toggle: apply-touchpad exited with", exitCode)
+        applyRetryTimer.restart()
       }
+      root.applyDesiredState()
       if (root.pendingRecheck) {
         root.pendingRecheck = false
         root.scheduleRecheck(50)
@@ -277,29 +403,54 @@ Item {
     onTriggered: root.recheck()
   }
 
+  Timer {
+    id: configRetryTimer
+    interval: 1000
+    repeat: false
+    onTriggered: root.requestConfigReload()
+  }
+
+  Timer {
+    id: stateRetryTimer
+    interval: 1000
+    repeat: false
+    onTriggered: {
+      loadManagedProc.accepted = false
+      if (!loadManagedProc.running)
+        loadManagedProc.running = true
+    }
+  }
+
+  Timer {
+    id: applyRetryTimer
+    interval: 1000
+    repeat: false
+    onTriggered: root.applyDesiredState()
+  }
+
   // Safety net for missed udev events (Bluetooth especially).
   Timer {
-    interval: 5000
+    interval: 30000
     running: true
     repeat: true
     onTriggered: root.scheduleRecheck(0)
   }
 
   Component.onCompleted: {
+    requestConfigReload()
+    loadManagedProc.accepted = false
     loadManagedProc.running = true
   }
 
-  // Omarchy unloads a plugin before deleting it and does not run uninstall.sh.
-  // Restore only when our ownership marker proves this plugin disabled the
-  // touchpad. The detached command is independent of files about to be removed.
+  // Omarchy unloads a plugin before deleting it and has no uninstall hook.
+  // Ask the helper to inspect the ownership marker, and also use the stable
+  // built-in command when QML has observed plugin ownership. The latter keeps
+  // the live restore working even if the plugin directory is deleted before
+  // the detached helper has exec'd.
   Component.onDestruction: {
-    Quickshell.execDetached([
-      "bash", "-c",
-      "managed=\"$HOME/.local/state/omarchy/plugins/dev.ywenhao.mouse-touchpad-toggle/managed\"; "
-        + "[[ -f \"$managed\" ]] || exit 0; "
-        + "omarchy toggle touchpad on >/dev/null 2>&1 || true; "
-        + "rm -f \"$HOME/.local/state/omarchy/toggles/hypr/touchpad-disabled-name\" \"$managed\""
-    ])
+    Quickshell.execDetached([helperScript, "restore"])
+    if (managedDisable)
+      Quickshell.execDetached(["omarchy", "toggle", "touchpad", "on"])
   }
 
   IpcHandler {

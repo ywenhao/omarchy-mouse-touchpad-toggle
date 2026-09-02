@@ -7,7 +7,7 @@ mouse is connected, and restores it when every mouse is gone.
 
 - USB and Bluetooth mice detected via udev (`ID_INPUT_MOUSE=1`)
 - Touchpads and trackpoints are never treated as mice
-- Event-driven with `udevadm monitor`, plus a short safety poll
+- Event-driven with `udevadm monitor`, plus a bounded 30-second safety poll
 - Multiple mice supported at once
 - Uses Omarchy's native touchpad persistence (`omarchy toggle touchpad` path)
 - Works with Hyprland's Lua config (`hyprctl eval` / `hl.device`)
@@ -47,13 +47,18 @@ Edit the plugin's `config.json` (hot-reloads on save):
 | `notify` | `false` | Show Omarchy OSD when the touchpad changes |
 | `ignoreNamePatterns` | `[]` | Case-insensitive substrings to ignore |
 
+The configuration file is capped at 16 KiB. `ignoreNamePatterns` accepts at
+most 32 strings of at most 128 characters each. Invalid or oversized
+configuration falls back to the defaults above.
+
 ## How it works
 
-1. `bin/detect-mice` walks `/dev/input/event*` and keeps devices with
-   `ID_INPUT_MOUSE=1`, excluding touchpads and pointing sticks.
+1. `bin/plugin-helper` runs one supervised, size-capped `udevadm info
+   --export-db` scan with a two-second total deadline. A timeout fails the scan
+   closed instead of reporting that every mouse disappeared.
 2. `Service.qml` listens for input udev events, debounces, and rechecks.
-3. When a relevant mouse appears, `bin/apply-touchpad off` runs the same
-   Hyprland Lua call Omarchy uses:
+3. When a relevant mouse appears, the helper runs the same Hyprland Lua call
+   Omarchy uses, then persists state through its descriptor-safe writer:
 
    ```sh
    hyprctl eval 'hl.device({ name = "...", enabled = false })'
@@ -74,15 +79,21 @@ If the touchpad was already disabled by the user, the plugin leaves it alone and
 does not claim ownership. Disabling or removing the plugin restores the touchpad
 only when this marker proves the plugin changed it.
 
+The helper opens state/config directories and files without following symlinks,
+validates opened descriptors for type, owner, permissions, and size, writes
+owner-only temporary files, then uses descriptor-relative atomic replacement
+and file/directory `fsync`. Mouse and config outputs use Python's JSON encoder
+and are capped before QML buffers or parses them.
+
 ## Dependencies and security
 
 The plugin runs unsandboxed with your user permissions, like every Omarchy shell
 plugin. It requires no elevated privileges, package installation, system
 services, or network access.
 
-It uses commands included with a standard Omarchy installation: Bash, `udevadm`,
-`setpriv` (util-linux), `hyprctl`, `omarchy-hw-touchpad`, and optionally
-`omarchy-osd`. The local-development `install.sh` also uses `rsync`.
+It uses commands included with a standard Omarchy installation: the system
+`/usr/bin/python3` (standard library only), `udevadm`, `setpriv` (util-linux),
+`hyprctl`, `omarchy-hw-touchpad`, and optionally `omarchy-osd`.
 
 ## Status
 
@@ -104,17 +115,15 @@ omarchy plugin remove dev.ywenhao.mouse-touchpad-toggle
 ```
 
 Omarchy unloads the service before deleting it. If the plugin owns the current
-auto-disable, unloading restores the touchpad and clears its persisted state.
+auto-disable, unloading invokes Omarchy's built-in touchpad restore command
+before the plugin directory is removed, so the touchpad is not left disabled.
 
 ## Local development
 
 ```sh
-./install.sh    # copy into ~/.config/omarchy/plugins and enable
-./uninstall.sh  # disable, remove install, restore touchpad if managed
 omarchy plugin validate .
+python3 -m unittest discover -s tests -v  # optional contributor check
 ```
-
-Re-running `install.sh` preserves the installed `config.json`.
 
 ## License
 
